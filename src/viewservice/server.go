@@ -32,14 +32,42 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
-	// Your code here.	
+	now := time.Now()
+	vs.pingTimeMap[args.Me] = now
 
-	// 1. Update ping times for current server
-	
-	// 2. Update view and/or idle server if reboot or new server, or ACK the current view
+	// first ever server
+	if vs.currView.Viewnum == 0 {
+		vs.currView.Viewnum = 1
+		vs.currView.Primary = args.Me
+		vs.currView.Backup = ""
+		vs.primaryAckedCurrView = false
+		reply.View = vs.currView
+		return nil
+	}
 
+	// primary ACKs current view
+	if args.Me == vs.currView.Primary && args.Viewnum == vs.currView.Viewnum {
+		vs.primaryAckedCurrView = true
+	}
+
+	// restarted primary or backup
+	if args.Viewnum == 0 {
+		if args.Me == vs.currView.Primary || args.Me == vs.currView.Backup {
+			// treat as dead; tick() will handle it
+		} else {
+			vs.idleServer = args.Me
+		}
+	}
+
+	// idle server joins
+	if args.Me != vs.currView.Primary && args.Me != vs.currView.Backup {
+		vs.idleServer = args.Me
+	}
+
+	reply.View = vs.currView
 	return nil
 }
+
 
 
 //
@@ -49,12 +77,10 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 	vs.mu.Lock()
 	defer vs.mu.Unlock()
 
-	// Your code here.	
-
-	// Add view to the reply message
-
+	reply.View = vs.currView
 	return nil
 }
+
 
 
 //
@@ -64,17 +90,47 @@ func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
 //
 func (vs *ViewServer) tick() {
 	vs.mu.Lock()
-	defer vs.mu.Unlock()	
+	defer vs.mu.Unlock()
 
-	// Your code here.	
+	if vs.currView.Viewnum == 0 || !vs.primaryAckedCurrView {
+		return
+	}
 
-	// 1. No recent pings from the idle server
+	now := time.Now()
+	dead := func(s string) bool {
+		t, ok := vs.pingTimeMap[s]
+		if !ok {
+			return true
+		}
+		return now.Sub(t) > DeadPings*PingInterval
+	}
 
-	// 2. No recent pings from the backup
+	primaryDead := vs.currView.Primary != "" && dead(vs.currView.Primary)
+	backupDead := vs.currView.Backup != "" && dead(vs.currView.Backup)
 
-	// 3. No recent pings from the primary
-	
+	if primaryDead {
+		vs.currView.Viewnum++
+		vs.currView.Primary = vs.currView.Backup
+		vs.currView.Backup = ""
+		vs.primaryAckedCurrView = false
+		return
+	}
+
+	if backupDead {
+		vs.currView.Viewnum++
+		vs.currView.Backup = ""
+		vs.primaryAckedCurrView = false
+		return
+	}
+
+	if vs.currView.Backup == "" && vs.idleServer != "" {
+		vs.currView.Viewnum++
+		vs.currView.Backup = vs.idleServer
+		vs.idleServer = ""
+		vs.primaryAckedCurrView = false
+	}
 }
+
 
 
 //
